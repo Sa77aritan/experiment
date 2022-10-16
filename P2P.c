@@ -11,6 +11,8 @@
 #include <signal.h>
 #include <sys/wait.h>
 #include <arpa/inet.h>
+#include <stdio.h>
+#include <gtk/gtk.h>
 
 #define READ 0
 #define WRITE 1
@@ -19,9 +21,18 @@ void clientP2P(char *message,int port);
 void serverP2P(int port);
 int simpleClient(int port);
 int simpleServer(int port);
+void parent(int pfd_child1[2], int pfd_child2[2]);
 void child1(int pfd[2], int port);
 void child2(int pfd[2], int port);
 void childReaper(pid_t childPID, int child_status);
+
+// GUI
+void do_display(GtkWidget *calculate, gpointer data);
+void add_to_messageHistory(char *messageHistory, char *sender_message, char *receiver_message);
+
+static GtkWidget *inputMessage;
+static GtkWidget *result;
+char messageHistory[3000]; // todo: dynamic memory
 
 int main(int argc, char *argv[])
 {
@@ -32,24 +43,12 @@ int main(int argc, char *argv[])
 
     //printf("Argv: %s\t", argv[1]);
     printf("Port input: %d\t", atoi(argv[1]));
-    printf("Port output: %s\n", argv[2]);
-
-
+    printf("Port output: %d\n", atoi(argv[2]));
 
     // pid_t for the two forks
     pid_t p1;
     pid_t p2;
-    /**
-     * 1. fork
-     * 2. child
-     * 3. Do things...
-     * 4. reap child
-     */
 
-    /*
-     * child1 = recv
-     * child2 = sender
-     */
     int pfd_child1[2]; // Used to store two ends of the pipe of child1
     int pfd_child2[2]; // Used to store two ends of the pipe of child2
 
@@ -62,16 +61,17 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-
     if (p1 < 0) {
         fprintf(stderr, "fork Failed");
         return 1;
     }
-
-    // Important: each entity must close the pipe ends it does not need
+    if (p2 < 0) {
+        fprintf(stderr, "fork Failed");
+        return 1;
+    }
 
     // parent process
-    // acts as server
+
     if ((p1 = fork()) > 0)
     {
         printf("Parent: My PID: %i\n", p1);
@@ -79,9 +79,35 @@ int main(int argc, char *argv[])
         if ((p2 = fork() > 0))
         {
             // parent
+            // acts as server
             printf("Parent: My PID: %i\n", p2);
 
+            // --------------------------------------------------------------------------------------------
+            // GUI
+            GtkWidget *window, *grid, *display_message_history;
+            gtk_init(&argc, &argv);
 
+            window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+            g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+
+            grid = gtk_grid_new();
+            gtk_container_add(GTK_CONTAINER(window), grid);
+
+            inputMessage = gtk_entry_new();
+            gtk_grid_attach(GTK_GRID(grid), inputMessage, 0, 10, 1, 1);
+
+            display_message_history = gtk_button_new_with_label("send");
+            g_signal_connect(display_message_history, "clicked", G_CALLBACK(do_display), NULL);
+            gtk_grid_attach(GTK_GRID(grid), display_message_history, 2, 10, 1, 1);
+
+            result = gtk_label_new("Messages:");
+            gtk_grid_attach(GTK_GRID(grid), result, 0, 0, 3, 10);
+
+            gtk_widget_show_all(window);
+            gtk_main();
+
+            // --------------------------------------------------------------------------------------------
+            parent(pfd_child1, pfd_child2);
         }
         else
         {
@@ -159,14 +185,37 @@ void parent(int pfd_child1[2], int pfd_child2[2])
     close(pfd_child1[WRITE]);
     close(pfd_child2[WRITE]);
 
-    // reads from pipe
-    char *bufferChild1 = (char*)malloc(256); // buffer size: 256 bytes
-    read(pfd_child1[READ], bufferChild1, 256); // read 256 characters
-    printf("Received message from Child1: %s\n", bufferChild1);
+    //char *bufferChild2 = (char*)malloc(256);
+    char bufferChild2[256];
 
-    char *bufferChild2 = (char*)malloc(256);
-    read(pfd_child2[READ], bufferChild2, 256);
-    printf("Received message from Child2: %s\n", bufferChild2);
+    //char *bufferChild1 = (char*)malloc(256); // buffer size: 256 bytes
+    char bufferChild1[256];
+
+    int counter = 0;
+    // loop to read pipes
+    while (1)
+    {
+        if (counter > 20)
+        {
+            break;
+        }
+        counter++;
+        // reads from pipe
+        read(pfd_child1[READ], bufferChild1, 256); // read 256 characters
+        //printf("Received message from Child1: %s\n", bufferChild1);
+
+        sleep(1);
+
+        read(pfd_child2[READ], bufferChild2, 256);
+        //printf("Received message from Child2: %s\n", bufferChild2);
+
+        sleep(1);
+
+        // the messages from the pipe are written into the array messageHistory
+        add_to_messageHistory(messageHistory, bufferChild1, bufferChild2);
+
+        // todo: if child sends signal x to parent => stops, breaks out of loop
+    }
 
     // closes fd after it's not used anymore
     close(pfd_child1[READ]);
@@ -318,12 +367,12 @@ int simpleClient(int port)
     printf("Data received: %s",buffer);
 
     // How to send and recv
-    while (1)
-    {
+    //while (1)
+    //{
         // recv() from server; => checks if it should stop the connection
         // send() from client;
 
-    }
+    //}
 
     return clientSocket;
 }
@@ -411,3 +460,71 @@ void clientP2P(char *message, int port)
         strncpy(message, strData, 255);
     }
 }
+
+
+// --------------------------------------------------------------------------------------------
+// GUI Functions
+
+void do_display(GtkWidget *calculate, gpointer data) {
+    char *message = (char *)gtk_entry_get_text(GTK_ENTRY(inputMessage));
+
+
+    // add input message to string
+    // print new string into it
+    printf("Message history: %s\n", messageHistory);
+    printf("Message: %s\n", message);
+
+    // todo: Eventuell nicht in messageHistory hineinschreiben sondern nur Nachrichten + Sender + Datum/Uhrzeit
+    strcat(messageHistory, "\n-> new message\t:\n");
+
+    strcat(messageHistory, message);
+
+    printf("Message history: %s\n", messageHistory);
+    printf("Message: %s\n", message);
+
+    char buffer[strlen(messageHistory)];
+    snprintf(buffer, sizeof(buffer), "Message: %s\n", messageHistory);
+
+    gtk_label_set_text(GTK_LABEL(result), buffer);
+
+    // clears input field
+    gtk_entry_set_text(GTK_ENTRY(inputMessage), "");
+}
+
+/**
+ *
+ * @param size
+ * @return 1 or 0
+ */
+int check_for_change(int size)
+{
+
+}
+
+// todo: doesn't check if messageHistory Array is big enough
+/**
+ * Adds new input from sender and receiver into file messageHistory
+ * @param p_sender
+ * @param p_receiver
+ * @return
+ */
+void add_to_messageHistory(char *messageHistory, char *sender_message, char *receiver_message)
+{
+    if (sender_message[0] != '\n')
+    {
+        // add into messageHistory
+        strcat(messageHistory, sender_message);
+    }
+    if (receiver_message[0] != '\n')
+    {
+        // add into messageHistory
+        strcat(messageHistory, receiver_message);
+    }
+}
+
+void increaseSize()
+{
+
+}
+
+// --------------------------------------------------------------------------------------------
